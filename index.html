@@ -311,7 +311,7 @@ function cargarPartida(){
     return obj;
   }catch(e){ return null; }
 }
-function borrarPartida(){ try{ localStorage.removeItem(SAVE_KEY); }catch(e){} }
+function borrarPartida(){ try{ localStorage.removeItem(SAVE_KEY); localStorage.removeItem(STARTED_KEY); }catch(e){} }
 function juegoIniciado(){ return !!localStorage.getItem(STARTED_KEY); }
 function marcarIniciado(){ try{ localStorage.setItem(STARTED_KEY,'1'); }catch(e){} }
 
@@ -5941,26 +5941,28 @@ class MenuScene extends Phaser.Scene {
   abrir(){
     var scene=this;
     AudioMgr.stopBGM();
+    var save = cargarPartida(); // null si no hay partida o es inválida
     switch(this.sel){
       case 0: // INICIAR
-        if(cargarPartida()){
-          // Ya existe una partida guardada: preguntar si quiere
-          // continuar desde cero (reiniciar) o no.
+        if(save){
+          // Hay partida guardada: preguntar si reinicia o continúa
           this._mostrarModalReinicio();
         } else {
-          // Jugador nuevo (o sin partida guardada): entra directo,
-          // sin preguntar nada.
+          // Jugador nuevo: borra cualquier rastro viejo y entra directo
+          borrarPartida();
           marcarIniciado();
           this.scene.start('IntroScene');
         }
         break;
       case 1: // CARGAR PARTIDA
-        var save=cargarPartida();
         if(save){
-          this.registry.set('cargar_save',save);
+          // Hay partida guardada: cargarla
+          this.registry.set('cargar_save', save);
           marcarIniciado();
           this.scene.start('IntroScene');
         } else {
+          // No hay partida: mostrar mensaje de error y volver al menú
+          AudioMgr.playBGM(scene, 'musica_menu');
           this._mostrarMensaje('NO HAY PARTIDA\nGUARDADA');
         }
         break;
