@@ -5951,15 +5951,18 @@ class MenuScene extends Phaser.Scene {
           // Jugador nuevo: borra cualquier rastro viejo y entra directo
           borrarPartida();
           marcarIniciado();
+          window._saveParaCargar = null; // sin save
           this.scene.start('IntroScene');
         }
         break;
       case 1: // CARGAR PARTIDA
         if(save){
-          // Hay partida guardada: cargarla
+          // Hay partida guardada: ir DIRECTO a GameScene (sin intro)
+          // para evitar que el registry se pierda entre escenas
+          window._saveParaCargar = save;
           this.registry.set('cargar_save', save);
           marcarIniciado();
-          this.scene.start('IntroScene');
+          this.scene.start('GameScene');
         } else {
           // No hay partida: mostrar mensaje de error y volver al menú
           AudioMgr.playBGM(scene, 'musica_menu');
@@ -5967,6 +5970,7 @@ class MenuScene extends Phaser.Scene {
         }
         break;
       case 2: this.scene.start('OptionsScene'); break;
+
     }
   }
   _mostrarModalReinicio(){
@@ -6235,8 +6239,9 @@ class GameScene extends Phaser.Scene {
 
 
     // ── Cargar partida guardada si viene de "Cargar Partida"
-    var save=this.registry.get('cargar_save');
-    if(save){ this.registry.remove('cargar_save'); }
+    // Doble fuente: registry de Phaser + variable global de respaldo
+    var save = this.registry.get('cargar_save') || window._saveParaCargar || null;
+    if(save){ this.registry.remove('cargar_save'); window._saveParaCargar = null; }
 
     // ── Posición inicial
     this.px=(save&&save.px)||MAP_W/2;
