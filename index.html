@@ -277,12 +277,19 @@ function crearTexturaPersonaje(scene) {
 /* =====================================================
    SAVE / LOAD — localStorage
 ===================================================== */
-var SAVE_KEY='mamen_save', STARTED_KEY='mamen_started';
+var SAVE_KEY='mamen_save', STARTED_KEY='mamen_started', COMPLETED_KEY='mamen_completado';
 var SAVE_VERSION=11; // v11: se sube porque guardarPartida() antes descartaba en
                       // silencio los lotes/alcaldía/habilidad al guardar, y los ids
                       // de las bancas 1-8 estaban duplicados. Cualquier partida vieja
                       // (v10 o menor) queda incompleta/incoherente, así que se
                       // descarta automáticamente en vez de ofrecerla para cargar.
+// FIX (guardado/carga "a veces falla sin avisar"): antes guardarPartida()
+// tragaba cualquier error de localStorage.setItem (cuota llena, modo
+// privado de Safari/iOS que bloquea localStorage, etc.) y el botón de
+// PAUSA mostraba igual "✔ Partida guardada" aunque en realidad NO se había
+// guardado nada. Ahora guardarPartida()/cargarPartida() devuelven true/false
+// según si la operación realmente funcionó, para que la UI pueda avisar de
+// verdad cuando algo falla en vez de mentir con un mensaje de éxito.
 function guardarPartida(dinero,px,py,extra){
   try{
     var data={v:SAVE_VERSION,dinero:dinero,px:px,py:py,ts:Date.now()};
@@ -296,8 +303,13 @@ function guardarPartida(dinero,px,py,extra){
         if(Object.prototype.hasOwnProperty.call(extra,k)) data[k]=extra[k];
       }
     }
-    localStorage.setItem(SAVE_KEY,JSON.stringify(data));
-  }catch(e){}
+    var texto=JSON.stringify(data);
+    localStorage.setItem(SAVE_KEY,texto);
+    // Algunos navegadores (sobre todo en modo privado) no lanzan error al
+    // hacer setItem pero tampoco guardan nada de verdad. Se relee para
+    // confirmar que el guardado quedó realmente escrito.
+    return localStorage.getItem(SAVE_KEY)===texto;
+  }catch(e){ console.warn('No se pudo guardar la partida:', e); return false; }
 }
 function cargarPartida(){
   try{
@@ -309,11 +321,19 @@ function cargarPartida(){
     // guardaba automáticamente al salir sin que el jugador lo pidiera.
     if(!obj || obj.v!==SAVE_VERSION){ borrarPartida(); return null; }
     return obj;
-  }catch(e){ return null; }
+  }catch(e){ console.warn('No se pudo leer la partida guardada (dato corrupto), se descarta:', e); borrarPartida(); return null; }
 }
 function borrarPartida(){ try{ localStorage.removeItem(SAVE_KEY); localStorage.removeItem(STARTED_KEY); }catch(e){} }
 function juegoIniciado(){ return !!localStorage.getItem(STARTED_KEY); }
 function marcarIniciado(){ try{ localStorage.setItem(STARTED_KEY,'1'); }catch(e){} }
+// ── Juego completado (ver CreditsScene / _desbloquearIglesia): una vez que
+// el jugador termina el juego (construye y mejora todo y la iglesia se
+// restaura), la partida guardada deja de tener sentido, así que se borra y
+// se marca "completado" para que el menú principal ya no ofrezca "CARGAR
+// PARTIDA" y "INICIAR" arranque siempre una partida nueva sin preguntar.
+function marcarCompletado(){ try{ localStorage.setItem(COMPLETED_KEY,'1'); }catch(e){} }
+function limpiarCompletado(){ try{ localStorage.removeItem(COMPLETED_KEY); }catch(e){} }
+function juegoCompletado(){ return !!localStorage.getItem(COMPLETED_KEY); }
 
 
 /* =====================================================
@@ -413,6 +433,21 @@ var AudioMgr = {
   },
   playSonidoBien: function(scene){
     var s = this.getSonidoBien(scene);
+    if(s) s.play();
+  },
+  getSonidoAdvertencia: function(scene){
+    if(!scene.cache.audio.exists('sonido_advertencia')) return null;
+    if(!this._sonidoAdvertencia){
+      this._sonidoAdvertencia = scene.sound.add('sonido_advertencia', { volume: this.volFX(scene) });
+    } else {
+      this._sonidoAdvertencia.setVolume(this.volFX(scene));
+    }
+    return this._sonidoAdvertencia;
+  },
+  // Se reproduce cuando aparece el aviso rojo del ladrón o el de la
+  // protesta ("¡CUIDADO! VIENE UN LADRÓN" / "¡HAY PROTESTA EN LA PLAZA!").
+  playAdvertencia: function(scene){
+    var s = this.getSonidoAdvertencia(scene);
     if(s) s.play();
   }
 };
@@ -1815,8 +1850,10 @@ var RECOMPENSA_LOTE9_NIVEL2  = 60000;  // Bs. al subir a Nivel 2
 var RECOMPENSA_LOTE9_NIVEL3  = 150000; // Bs. al subir a Nivel 3
 
 /* =====================================================
-   PATUJÚ (flor nacional de Bolivia): 3 unidades sueltas,
-   sin candado ni orden de compra (no dependen unas de otras),
+   PATUJÚ (flor nacional de Bolivia): 3 unidades EN CADENA,
+   igual que las bancas/faroles/árboles — el Patujú 1 empieza
+   desbloqueado; el 2 no se puede pagar hasta terminar el 1,
+   y el 3 hasta terminar el 2 (candado mientras tanto),
    ubicadas junto a los lotes 5, 6, 8 y 9:
      - Patujú 1: entre el Lote 8 y el Lote 9.
      - Patujú 2: debajo del Lote 5.
@@ -1885,27 +1922,26 @@ var MERCADO10_COL_ANCHO = MERCADO9_COL_ANCHO, MERCADO10_COL_ALTO = MERCADO9_COL_
    debe recoger una cantidad N de monedas normales del mapa
    (las mismas de siempre, de cualquier parte del mapa).
 ===================================================== */
-var PROTESTA_INTERVALO_MS   = 60000;  // cada 1 minuto aparece una protesta
+var PROTESTA_INTERVALO_MS   = 120000;  // cada 2 minutos aparece una protesta
 var PROTESTA_PORCENTAJE     = 0.35;   // 35% del ingreso total/seg se descuenta mientras dure
-var PROTESTA_X = 1000, PROTESTA_Y = 950; // un poco a la izquierda del centro de la plaza, un poco arriba
-var PROTESTA_ANCHO = 28, PROTESTA_ALTO = 24; // tamaño muy reducido para no tapar la plaza
+var PROTESTA_X = 1000, PROTESTA_Y = 700; // arriba del Farol 6 (que se mantiene en y=920, sin tocarlo)
+var PROTESTA_ANCHO = 40, PROTESTA_ALTO = 34; // un poco más grande
 
 /* =====================================================
    SISTEMA DE LADRÓN (obstáculo)
-   Cada LADRON_INTERVALO_MS (30 segundos) aparece una persona que
+   Cada LADRON_INTERVALO_MS (3 minutos) aparece una persona que
    recorre TODAS las estructuras siguiendo un recorrido cuadrado por
    todo el mapa (empieza en el Lote 1, en la punta izquierda), pasando
    por cada pad de recogida. Si al pasar hay dinero acumulado (las
    monedas "flotantes" del lote, esperando a que el jugador las
    recoja), el ladrón se lo roba antes de que el jugador llegue.
-   Da toda la vuelta en LADRON_DURACION_MS (10 segundos) y desaparece.
+   Da toda la vuelta en LADRON_DURACION_MS (20 segundos) y desaparece.
 ===================================================== */
-var LADRON_INTERVALO_MS = 30000; // cada 30 segundos aparece un ladrón
-var LADRON_DURACION_MS  = 10000; // tarda 10 segundos en dar la vuelta completa
+var LADRON_INTERVALO_MS = 180000; // cada 3 minutos aparece un ladrón
+var LADRON_DURACION_MS  = 20000; // tarda 20 segundos en completar el recorrido
 var LADRON_RADIO_ROBO   = 55;    // distancia al pad para poder robarlo
-// Recorrido cuadrado: Lote1(izq-arriba) → Lote3 → Lote5 (baja por la
-// izquierda) → Lote7,8,9,10 (cruza todo el borde inferior) → Lote6 →
-// Lote4 → Lote2 (sube por la derecha) → vuelve a Lote1 (cierra arriba).
+// Recorrido: Lote1→3→5 (baja izquierda)→7→8→9→10 (borde inferior)→6→4→2
+// (sube derecha) → termina en el centro de la plaza (no cierra el cuadrado).
 var LADRON_RUTA = [
   {x:LOTE_BOTON_X,   y:LOTE_BOTON_Y,   n:1},
   {x:LOTE3_BOTON_X,  y:LOTE3_BOTON_Y,  n:3},
@@ -1917,12 +1953,12 @@ var LADRON_RUTA = [
   {x:LOTE6_BOTON_X,  y:LOTE6_BOTON_Y,  n:6},
   {x:LOTE4_BOTON_X,  y:LOTE4_BOTON_Y,  n:4},
   {x:LOTE2_BOTON_X,  y:LOTE2_BOTON_Y,  n:2},
-  {x:LOTE_BOTON_X,   y:LOTE_BOTON_Y,   n:1}
+  {x:1200,           y:1200,            n:0}  // termina en centro de plaza
 ];
 
-var PRECIO_ALCALDIA           = 300000; // Bs. para desbloquear la alcaldía
-var VELOCIDAD_COMPRA_ALCALDIA = 15000;  // Bs./segundo parado en la zona dorada
-var RECOMPENSA_ALCALDIA       = 100000; // Bs. de recompensa al desbloquearla
+var PRECIO_ALCALDIA           = 100000; // Bs. para desbloquear la alcaldía
+var VELOCIDAD_COMPRA_ALCALDIA = 35000;  // Bs./segundo parado en la zona dorada
+var RECOMPENSA_ALCALDIA       = 80000; // Bs. de recompensa al desbloquearla
 var ALCALDIA_X = 1650, ALCALDIA_Y = 195;         // centro del edificio (movido a la derecha, casi al tope de la calle este)
 var ALCALDIA_ANCHO = 780, ALCALDIA_ALTO = 340;    // tamaño en pantalla (edificio grande)
 var ALCALDIA_ZONA_X = 1650, ALCALDIA_ZONA_Y = 400; // círculo de pago, frente a la entrada
@@ -1952,7 +1988,7 @@ var ALCALDIA_COL_ANCHO = 640, ALCALDIA_COL_ALTO = 280; // colisión (no se puede
    Cada nivel se compra una sola vez (se paga de golpe con el
    dinero acumulado, como una tienda).
 ===================================================== */
-var HABILIDAD_VEL_PRECIOS = [100000, 300000, 700000]; // Bs. Nivel 1,2,3
+var HABILIDAD_VEL_PRECIOS = [100000, 300000, 500000]; // Bs. Nivel 1,2,3
 var HABILIDAD_VEL_BONOS   = [0.25, 0.50, 1.00];        // +25%, +50%, +100% velocidad
 
 /* SVG de la estructura del 4to lote — "Escuela Técnica"
@@ -5710,6 +5746,7 @@ class BootScene extends Phaser.Scene {
     this.load.audio('sonido_boton', ['assets/audio/Mover%20Botones.mp3']);
     this.load.audio('sonido_recoger_dinero', ['assets/audio/RecogerDinero.mp3']);
     this.load.audio('sonido_bien', ['assets/audio/SonidoBien.mp3']);
+    this.load.audio('sonido_advertencia', ['assets/audio/Advertencia.mp3']);
     this.load.audio('musica_creditos', ['assets/audio/creditos.mp3']);
   }
   create(){
@@ -5769,6 +5806,8 @@ class BootScene extends Phaser.Scene {
     // Ícono de papel (papel.txt en base64) — reemplaza el emoji 📄
     // en el botón de OBJETIVOS del HUD.
     cargarTexturaBase64(scene,'txt/papel.txt','icono_papel', function(ok){});
+    // Sprite del ladrón (malo.txt en base64) — personaje villano
+    cargarTexturaBase64(scene,'txt/malo.txt','malo_tex', function(ok){});
     // Mercado HIPERMAXI: textura de reemplazo (instantánea) + SVG real en paralelo
     crearTexturaMercadoFallback(scene);
     cargarTexturaMercado();
@@ -5848,19 +5887,27 @@ class MenuScene extends Phaser.Scene {
     this.musica = AudioMgr.playBGM(this, 'musica_menu');
     this.sonido = AudioMgr.getSonido(this);
     this.sel=0;
-    var btnData=[
-      {label:'INICIAR',       icoKey:'ico_play',col:0xA01818,colH:0xC82020,y:235},
-      {label:'CARGAR PARTIDA',icoKey:'ico_file',col:0xB8860B,colH:0xFFD700,y:323},
-      {label:'OPCIONES',      icoKey:'ico_opts',col:0x1D8C38,colH:0x27AE48,y:411},
+    // FIX: si el jugador ya completó el juego (construyó/mejoró todo y vio
+    // los créditos), la partida guardada se borra automáticamente y ya no
+    // tiene sentido ofrecer "CARGAR PARTIDA" — solo queda "INICIAR" (que
+    // arranca una partida nueva directo, sin preguntar) y "OPCIONES".
+    this._completado = juegoCompletado();
+    var btnData = this._completado ? [
+      {label:'INICIAR',       icoKey:'ico_play',col:0xA01818,colH:0xC82020,y:235,accion:'iniciar'},
+      {label:'OPCIONES',      icoKey:'ico_opts',col:0x1D8C38,colH:0x27AE48,y:323,accion:'opciones'},
+    ] : [
+      {label:'INICIAR',       icoKey:'ico_play',col:0xA01818,colH:0xC82020,y:235,accion:'iniciar'},
+      {label:'CARGAR PARTIDA',icoKey:'ico_file',col:0xB8860B,colH:0xFFD700,y:323,accion:'cargar'},
+      {label:'OPCIONES',      icoKey:'ico_opts',col:0x1D8C38,colH:0x27AE48,y:411,accion:'opciones'},
     ];
-    this.btnY=[235,323,411];
+    this._numBtns=btnData.length;
     var BW=440,BH=70,BCX=1020,icoX=BCX-BW/2+BH/2+6,lblX=BCX-BW/2+BH+18;
     this.gBtns=this.add.graphics(); this.bData=btnData; this.BW=BW; this.BH=BH; this.BCX=BCX;
     this.iconImgs=[]; this.lblTexts=[];
     for(var i=0;i<btnData.length;i++){
       (function(idx){
         scene.iconImgs.push(scene.add.image(icoX,btnData[idx].y,btnData[idx].icoKey).setDisplaySize(BH-16,BH-16));
-        scene.lblTexts.push(scene.add.text(lblX,btnData[idx].y,btnData[idx].label,{fontFamily:"'Press Start 2P'",fontSize:idx===1?'11px':'14px',color:'#ffffff',stroke:'#000000',strokeThickness:3}).setOrigin(0,0.5));
+        scene.lblTexts.push(scene.add.text(lblX,btnData[idx].y,btnData[idx].label,{fontFamily:"'Press Start 2P'",fontSize:btnData[idx].accion==='cargar'?'11px':'14px',color:'#ffffff',stroke:'#000000',strokeThickness:3}).setOrigin(0,0.5));
         var z=scene.add.zone(BCX,btnData[idx].y,BW,BH).setInteractive({useHandCursor:true});
         z.on('pointerover',function(){ if(scene.sel!==idx){ scene.sel=idx; AudioMgr.playFX(scene); scene.dibujarBtns(); } });
         z.on('pointerdown',function(){
@@ -5874,8 +5921,8 @@ class MenuScene extends Phaser.Scene {
     this.dibujarBtns();
     // Pantalla completa en móvil: se activa con el primer toque del usuario
     this.input.once('pointerdown',function(){ attemptFullscreen(scene); });
-    this.input.keyboard.on('keydown-UP',function(){ scene.sel=(scene.sel-1+3)%3; AudioMgr.playFX(scene); scene.dibujarBtns(); });
-    this.input.keyboard.on('keydown-DOWN',function(){ scene.sel=(scene.sel+1)%3; AudioMgr.playFX(scene); scene.dibujarBtns(); });
+    this.input.keyboard.on('keydown-UP',function(){ scene.sel=(scene.sel-1+scene._numBtns)%scene._numBtns; AudioMgr.playFX(scene); scene.dibujarBtns(); });
+    this.input.keyboard.on('keydown-DOWN',function(){ scene.sel=(scene.sel+1)%scene._numBtns; AudioMgr.playFX(scene); scene.dibujarBtns(); });
     this.input.keyboard.on('keydown-ENTER',function(){ scene.abrir(); });
     // Cruz direccional + botón E táctiles (solo en pantallas táctiles),
     // para no depender de acertar el dedo justo sobre cada botón.
@@ -5887,7 +5934,7 @@ class MenuScene extends Phaser.Scene {
     var dep=400, SF=0;
 
     function moverSel(delta){
-      scene.sel=(scene.sel+delta+3)%3;
+      scene.sel=(scene.sel+delta+scene._numBtns)%scene._numBtns;
       AudioMgr.playFX(scene);
       scene.dibujarBtns();
     }
@@ -5941,21 +5988,27 @@ class MenuScene extends Phaser.Scene {
   abrir(){
     var scene=this;
     AudioMgr.stopBGM();
-    var save = cargarPartida(); // null si no hay partida o es inválida
-    switch(this.sel){
-      case 0: // INICIAR
+    // Si el juego ya fue completado no hay (ni debe haber) partida guardada
+    // que ofrecer: se ignora cualquier save viejo y siempre se entra como
+    // partida nueva, sin preguntar.
+    var save = this._completado ? null : cargarPartida(); // null si no hay partida, es inválida o el juego ya se completó
+    var accion = (this.bData[this.sel]||{}).accion;
+    switch(accion){
+      case 'iniciar':
         if(save){
           // Hay partida guardada: preguntar si reinicia o continúa
           this._mostrarModalReinicio();
         } else {
-          // Jugador nuevo: borra cualquier rastro viejo y entra directo
+          // Jugador nuevo (o el juego ya fue completado antes): borra
+          // cualquier rastro viejo y entra directo a una partida nueva.
           borrarPartida();
+          limpiarCompletado();
           marcarIniciado();
           window._saveParaCargar = null; // sin save
           this.scene.start('IntroScene');
         }
         break;
-      case 1: // CARGAR PARTIDA
+      case 'cargar':
         if(save){
           // Hay partida guardada: ir DIRECTO a GameScene (sin intro)
           // para evitar que el registry se pierda entre escenas
@@ -5969,7 +6022,7 @@ class MenuScene extends Phaser.Scene {
           this._mostrarMensaje('NO HAY PARTIDA\nGUARDADA');
         }
         break;
-      case 2: this.scene.start('OptionsScene'); break;
+      case 'opciones': this.scene.start('OptionsScene'); break;
 
     }
   }
@@ -6004,7 +6057,7 @@ class MenuScene extends Phaser.Scene {
     btnNO.on('pointerout', function(){ btnNO.setBackgroundColor('#03015E'); });
     var cerrar=function(){ ov.destroy(); g.destroy(); txt.destroy(); btnSI.destroy(); btnNO.destroy(); };
     btnSI.on('pointerdown',function(){
-      cerrar(); borrarPartida(); marcarIniciado();
+      cerrar(); borrarPartida(); limpiarCompletado(); marcarIniciado();
       scene.scene.start('IntroScene');
     });
     btnNO.on('pointerdown',function(){
@@ -6158,9 +6211,12 @@ class PauseScene extends Phaser.Scene {
         this.scene.stop('PauseScene');
         break;
       case 1: // Guardar
-        if(gS) guardarPartida(gS.dinero,gS.px,gS.py,gS._construirDatosGuardado());
-        var msg=this.add.text(640,610,'✔ Partida guardada',{
-          fontFamily:"'Press Start 2P'",fontSize:'10px',color:'#00FF88',
+        // FIX: antes se mostraba "✔ Partida guardada" sin importar si
+        // guardarPartida() había fallado de verdad (cuota llena, modo
+        // privado, etc.). Ahora el mensaje depende del resultado real.
+        var okGuardado = gS ? guardarPartida(gS.dinero,gS.px,gS.py,gS._construirDatosGuardado()) : false;
+        var msg=this.add.text(640,610, okGuardado ? '✔ Partida guardada' : '✖ No se pudo guardar',{
+          fontFamily:"'Press Start 2P'",fontSize:'10px',color: okGuardado ? '#00FF88' : '#FF6666',
           stroke:'#000',strokeThickness:2
         }).setOrigin(0.5).setDepth(10);
         this.tweens.add({targets:msg,alpha:0,delay:1400,duration:500,onComplete:function(){ msg.destroy(); }});
@@ -6170,10 +6226,10 @@ class PauseScene extends Phaser.Scene {
         this.scene.launch('OptionsScene');
         this.scene.bringToTop('OptionsScene');
         break;
-      case 3: // Salir
+      case 3: // Salir — guarda automáticamente antes de salir
         this._saliendo=true;
-        // No se guarda automáticamente al salir: solo queda guardada
-        // la partida si el jugador presionó "Guardar" (caso 1) antes.
+        // Guardar el progreso actual antes de volver al menú
+        if(gS) guardarPartida(gS.dinero, gS.px, gS.py, gS._construirDatosGuardado());
         AudioMgr.stopBGM();
         this._animarSaliendo();
         break;
@@ -6246,7 +6302,7 @@ class GameScene extends Phaser.Scene {
     // ── Posición inicial
     this.px=(save&&save.px)||MAP_W/2;
     this.py=(save&&save.py)||MAP_H/2+220;
-    this.dinero=(save&&save.dinero)||10000000000000;
+    this.dinero=(save&&save.dinero!=null)?save.dinero:4500; // jugador nuevo arranca con Bs.4500; si hay partida guardada, se respeta su dinero acumulado
     this.habilidadVelocidad=(save&&save.habilidadVelocidad)||0; // 0 = sin comprar, 1..3 = nivel comprado
     this.pFaceRight=true; this.SPEED_BASE=200;
     this._aplicarBonoVelocidad();
@@ -6301,7 +6357,7 @@ class GameScene extends Phaser.Scene {
         barraFondo:null, barraFill:null, banca:null, sombra:null, candado:null
       });
     });
-    // ── Patujú: 3 unidades sueltas (sin candado ni orden), junto a los
+    // ── Patujú: 3 unidades EN CADENA (igual que bancas/faroles/árboles),
     // lotes 5, 6, 8 y 9.
     var zonasPatujuGuardadas=(save&&save.zonasPatuju)||null;
     this.zonasPatuju=[];
@@ -6606,6 +6662,15 @@ class GameScene extends Phaser.Scene {
     try{ guardarPartida(this.dinero,this.px,this.py,this._construirDatosGuardado()); }catch(e){}
   }
 
+  // Apaga el temporizador de autoguardado y los listeners de
+  // visibilidad/pagehide. Se usa cuando el jugador termina el juego, para
+  // que no se vuelva a crear una partida guardada después de borrarla.
+  _detenerAutoguardado(){
+    if(this._autoguardadoEvent){ this._autoguardadoEvent.remove(false); this._autoguardadoEvent=null; }
+    if(this._onVisibilidadCambia){ document.removeEventListener('visibilitychange', this._onVisibilidadCambia); this._onVisibilidadCambia=null; }
+    if(this._onPageHide){ window.removeEventListener('pagehide', this._onPageHide); this._onPageHide=null; }
+  }
+
   _abrirPausa(){
     if(this._pausado || this._dialogo) return;
     this._pausado = true;
@@ -6772,7 +6837,7 @@ class GameScene extends Phaser.Scene {
     var borde=380;
     var x=Phaser.Math.Between(borde,MAP_W-borde);
     var y=Phaser.Math.Between(borde,MAP_H-borde);
-    var val=Phaser.Math.Between(5,99);
+    var val=Phaser.Math.Between(5,199);
     var g=this.add.graphics();
     g.fillStyle(0xFFDD00,1); g.fillCircle(x,y,12);
     g.fillStyle(0xFFBB00,1); g.fillCircle(x,y,9);
@@ -6865,6 +6930,7 @@ class GameScene extends Phaser.Scene {
   _mostrarAvisoProtesta(n){
     var scene=this;
     this._dialogo=true; // congela movimiento y el descuento de la protesta
+    AudioMgr.playAdvertencia(scene);
     var elems=[];
 
     var ov=scene.add.rectangle(640,360,1280,720,0x000000,0.65).setScrollFactor(0).setDepth(300);
@@ -7036,35 +7102,76 @@ class GameScene extends Phaser.Scene {
     });
   }
 
-  // Hace aparecer al ladrón en el Lote 1 (punta izquierda, primer
-  // punto del recorrido cuadrado) y arranca su recorrido.
+  // Hace aparecer al ladrón en el Lote 1 y muestra panel de aviso.
+  // El ladrón queda congelado hasta que el jugador presione ACEPTAR.
   _iniciarLadron(){
+    var scene=this;
     var l=this._ladron;
     var p0=LADRON_RUTA[0];
     l.activa=true;
     l.elapsed=0;
+    l._congelado=true; // congelado hasta que el jugador acepte el aviso
+    AudioMgr.playAdvertencia(scene);
 
+    // Sprite del ladrón: usa malo.txt si está disponible, sino fallback rojo
     l.sombra=this.add.ellipse(p0.x,p0.y+14,32,10,0x000000,0.3).setDepth(48);
-    l.sprite=this.add.image(p0.x,p0.y,'char_front')
-      .setOrigin(0.5,1).setScale(0.5).setTint(0x662020).setDepth(49);
+    var texKey = this.textures.exists('malo_tex') ? 'malo_tex' : 'char_front';
+    l.sprite=this.add.image(p0.x,p0.y,texKey)
+      .setOrigin(0.5,1).setDisplaySize(60,80).setDepth(49);
+    if(texKey==='char_front') l.sprite.setTint(0x662020);
 
-    l.textoAviso=this.add.text(p0.x,p0.y-64,'¡LADRÓN!',{
-      fontFamily:"'Press Start 2P'",fontSize:'7px',color:'#FF6666',
+    // Panel de aviso centrado — congela todo hasta ACEPTAR
+    var cx=640, cy=360;
+    var ov=scene.add.rectangle(cx,cy,1280,720,0x000000,0.65).setDepth(310).setScrollFactor(0);
+    var g=scene.add.graphics().setDepth(311).setScrollFactor(0);
+    g.fillStyle(0x1A0505,1); g.fillRoundedRect(cx-260,cy-110,520,220,14);
+    g.lineStyle(4,0xFF3333,1); g.strokeRoundedRect(cx-260,cy-110,520,220,14);
+    g.fillStyle(0xFF3333,1);
+    g.fillRect(cx-260,cy-110,14,14); g.fillRect(cx+246,cy-110,14,14);
+    g.fillRect(cx-260,cy+96,14,14);  g.fillRect(cx+246,cy+96,14,14);
+    // Guardar referencias a los textos para poder destruirlos después
+    var txtTitle=scene.add.text(cx,cy-60,'¡CUIDADO!',{
+      fontFamily:"'Press Start 2P'",fontSize:'20px',color:'#FF3333',
+      stroke:'#000',strokeThickness:3
+    }).setOrigin(0.5).setDepth(312).setScrollFactor(0);
+    var txtSub=scene.add.text(cx,cy-20,'VIENE UN LADRÓN',{
+      fontFamily:"'Press Start 2P'",fontSize:'14px',color:'#FFFFFF',
       stroke:'#000',strokeThickness:2
-    }).setOrigin(0.5).setDepth(60);
-    this.tweens.add({targets:l.textoAviso,y:l.textoAviso.y-20,alpha:0,duration:1200,onComplete:function(){
-      if(l.textoAviso){ try{l.textoAviso.destroy();}catch(e){} l.textoAviso=null; }
-    }});
+    }).setOrigin(0.5).setDepth(312).setScrollFactor(0);
+    var txtDesc=scene.add.text(cx,cy+18,'Va a robar el dinero acumulado\nde tus estructuras si no lo evitas.',{
+      fontFamily:"'Press Start 2P'",fontSize:'8px',color:'#FFAAAA',
+      stroke:'#000',strokeThickness:1,align:'center'
+    }).setOrigin(0.5).setDepth(312).setScrollFactor(0);
+    var btnAceptar=scene.add.text(cx,cy+75,'  ACEPTAR  ',{
+      fontFamily:"'Press Start 2P'",fontSize:'13px',color:'#FFFFFF',
+      backgroundColor:'#AA1111',padding:{x:16,y:8},stroke:'#000',strokeThickness:2
+    }).setOrigin(0.5).setDepth(312).setScrollFactor(0).setInteractive({useHandCursor:true});
+    btnAceptar.on('pointerover',function(){ btnAceptar.setBackgroundColor('#DD2222'); });
+    btnAceptar.on('pointerout', function(){ btnAceptar.setBackgroundColor('#AA1111'); });
+    // Destruir TODOS los elementos del panel al cerrar
+    var panelElems=[ov,g,txtTitle,txtSub,txtDesc,btnAceptar];
+    var cerrarPanel=function(){
+      panelElems.forEach(function(o){ try{ if(o && o.active) o.destroy(); }catch(e){} });
+      l._congelado=false; // descongelar al ladrón
+    };
+    btnAceptar.on('pointerdown', cerrarPanel);
+    // También cerrar con Enter o Espacio
+    var onKey=function(ev){
+      if(ev.keyCode===13||ev.keyCode===32){
+        scene.input.keyboard.off('keydown',onKey);
+        cerrarPanel();
+      }
+    };
+    scene.input.keyboard.on('keydown',onKey);
   }
 
   // Se llama cada frame desde update(). Avanza al ladrón por el
-  // recorrido cuadrado (LADRON_RUTA) a velocidad constante, de forma
-  // que complete la vuelta entera en LADRON_DURACION_MS. En cada
-  // tramo revisa si hay lotes con dinero acumulado cerca para robarlo.
+  // recorrido (LADRON_RUTA). Queda congelado mientras _congelado=true.
   _actualizarLadron(delta){
     var l=this._ladron;
     if(!l.activa) return;
     if(this._pausado) return;
+    if(l._congelado) return; // congelado por el panel de aviso
     l.elapsed += delta;
 
     var t = Phaser.Math.Clamp(l.elapsed/LADRON_DURACION_MS,0,1);
@@ -7078,7 +7185,7 @@ class GameScene extends Phaser.Scene {
     if(l.sprite){
       if(b.x<a.x) l.sprite.setFlipX(true); else if(b.x>a.x) l.sprite.setFlipX(false);
       l.sprite.setPosition(x,y);
-      l.sombra.setPosition(x,y+14);
+      if(l.sombra) l.sombra.setPosition(x,y+14);
     }
 
     this._robarLotesCercanos(x,y);
@@ -7371,16 +7478,20 @@ class GameScene extends Phaser.Scene {
     AudioMgr.playSonidoBien(scene);
   }
 
-  // ── Crea, para cada patujú, el marcador de compra o la planta ya
-  // instalada. A diferencia de bancas/faroles/árboles, los 3 patujúes
-  // NO están encadenados: no hay candado, los 3 se pueden comprar
-  // desde el principio, en cualquier orden.
+  // ── Crea, para cada patujú, el marcador/candado/planta ya instalada.
+  // Misma lógica de bloqueo en cadena que las bancas, los faroles y los
+  // árboles: reutiliza _crearCandadoZona / _crearMarcadorZona /
+  // _desbloquearZonaBanca, que son genéricos. El Patujú 1 empieza
+  // desbloqueado; el 2 y el 3 quedan con candado hasta que se termine
+  // de pagar el anterior de la fila.
   _crearZonasPatuju(){
     var scene=this;
-    this.zonasPatuju.forEach(function(z){
+    this.zonasPatuju.forEach(function(z,idx){
       if(z.comprada){ scene._instalarPatuju(z); return; }
-      z.bloqueada=false;
-      scene._crearMarcadorZona(z);
+      var anterior = idx>0 ? scene.zonasPatuju[idx-1] : null;
+      z.bloqueada = anterior ? !anterior.comprada : false;
+      if(z.bloqueada) scene._crearCandadoZona(z);
+      else scene._crearMarcadorZona(z);
     });
   }
 
@@ -7928,11 +8039,11 @@ class GameScene extends Phaser.Scene {
           }
         }
       }
-      // ── Patujúes: mismo cobro automático parado encima, pero SIN
-      // cadena de candados; los 3 se compran de forma independiente.
+      // ── Patujúes: mismo cobro automático parado encima, ahora EN
+      // CADENA como las bancas/faroles/árboles (Patujú 1 → 2 → 3).
       for(var pi=0;pi<this.zonasPatuju.length;pi++){
         var zp=this.zonasPatuju[pi];
-        if(zp.comprada) continue;
+        if(zp.comprada || zp.bloqueada) continue;
         var dp=Phaser.Math.Distance.Between(this.px,this.py,zp.x,zp.y);
         if(dp<70){
           zp._acumulador+=VELOCIDAD_COMPRA_PATUJU*dt;
@@ -7951,6 +8062,8 @@ class GameScene extends Phaser.Scene {
               zp.gastado=zp.precio; zp.comprada=true;
               this._instalarPatuju(zp);
               this._notificarPatujuListo(zp);
+              var siguienteP=this.zonasPatuju[pi+1];
+              if(siguienteP && siguienteP.bloqueada) this._desbloquearZonaBanca(siguienteP);
             }
           }
         }
@@ -12565,6 +12678,10 @@ class GameScene extends Phaser.Scene {
   }
 
   shutdown(){
+    // Limpiar variable global de save para que no se reutilice en un reinicio
+    window._saveParaCargar = null;
+    // Borrar la textura del mapa para que se redibuje limpio en el próximo create()
+    try{ if(this.textures && this.textures.exists('mapa')) this.textures.remove('mapa'); }catch(e){}
 
     if(this._autoguardadoEvent){
       this._autoguardadoEvent.remove();
@@ -13153,6 +13270,13 @@ class GameScene extends Phaser.Scene {
   _desbloquearIglesia(){
     var scene=this, ig=this._iglesia;
     ig.desbloqueada=true;
+    // El juego terminó: se borra la partida guardada y se marca como
+    // completado para que el menú principal ya no ofrezca "CARGAR PARTIDA"
+    // (ver MenuScene). También se apaga el autoguardado para que no vuelva
+    // a crear un save mientras corre la cinemática final/créditos.
+    this._detenerAutoguardado();
+    borrarPartida();
+    marcarCompletado();
     this._quitarCandadoIglesia();
     this.cameras.main.flash(400,255,215,0,true);
     AudioMgr.playFX(this);
@@ -13189,17 +13313,18 @@ class GameScene extends Phaser.Scene {
     this._hudOcultoCinematica=null;
   }
 
-  // Animación de cámara: se aleja (zoom-out) hasta mostrar el mapa
-  // completo como celebración de la recompensa final, con un mensaje
-  // fijo en pantalla. Luego muestra un panel de victoria, oscurece la
-  // pantalla y pasa a los créditos finales del juego.
+  // Animación final: SIN zoom ni alejamiento de cámara (se quitó a
+  // pedido, distorsionaba el HUD/mapa). En su lugar, el personaje camina
+  // automáticamente hacia la iglesia (como si el jugador lo controlara),
+  // con la cámara siguiéndolo con el mismo "startFollow" de siempre.
+  // Al llegar, se muestra el panel de victoria y se pasa a los créditos.
   _reproducirAnimacionMapaCompleto(){
     var scene=this;
-    this._dialogo=true; // congela movimiento/sistemas durante la cinemática
-    this._ocultarHUDJuego(); // FIX cámara: evita el HUD distorsionado durante el zoom-out
-    var cam=this.cameras.main;
-    cam.stopFollow();
-    var zoomMapaCompleto=Math.min(1280/MAP_W,720/MAP_H)*0.98;
+    this._dialogo=true; // congela el control manual del jugador durante la cinemática
+    this._ocultarHUDJuego();
+    // La cámara sigue al jugador con this.cameras.main.startFollow(this.jugador,...)
+    // desde que arrancó GameScene: no se toca el zoom ni el follow, así que
+    // simplemente lo acompaña mientras camina, sin ningún efecto de cámara.
 
     var msg=this.add.text(640,60,'¡PLAZA 24 DE SEPTIEMBRE\nCOMPLETADA!',{
       fontFamily:"'Press Start 2P'",fontSize:'14px',color:'#FFD700',
@@ -13207,10 +13332,34 @@ class GameScene extends Phaser.Scene {
     }).setOrigin(0.5).setScrollFactor(0).setDepth(500).setAlpha(0);
     this.tweens.add({targets:msg,alpha:1,duration:600});
 
-    cam.pan(MAP_W/2,MAP_H/2,1400,'Sine.easeInOut');
-    cam.zoomTo(zoomMapaCompleto,1400,'Sine.easeInOut',true,function(camara,progreso){
-      if(progreso>=1){
-        scene.time.delayedCall(2000,function(){
+    // Punto de destino: justo frente a la puerta de la iglesia.
+    var destX=IGLESIA_X, destY=IGLESIA_Y+IGLESIA_ALTO/2+30;
+    var origX=this.px, origY=this.py;
+    var distancia=Phaser.Math.Distance.Between(origX,origY,destX,destY);
+    var duracion=Phaser.Math.Clamp(distancia*4.2,1200,4500);
+
+    var prog={t:0};
+    this.tweens.add({
+      targets:prog, t:1, duration:duracion, ease:'Sine.easeInOut',
+      onUpdate:function(){
+        var nx=Phaser.Math.Linear(origX,destX,prog.t);
+        var ny=Phaser.Math.Linear(origY,destY,prog.t);
+        var dx=nx-scene.px, dy=ny-scene.py;
+        scene.px=nx; scene.py=ny;
+        // Mismo criterio de sprites direccionales que usa el control manual.
+        var tex='char_front';
+        if(Math.abs(dy)>Math.abs(dx)) tex = dy<0?'char_back':'char_front';
+        else tex = dx<0?'char_left':'char_right';
+        scene._lastTex=tex;
+        if(scene.jugador) scene.jugador.setTexture(tex);
+        var bob=Math.sin(prog.t*Math.PI*8)*3.5;
+        if(scene.jugador) scene.jugador.setPosition(scene.px,scene.py+bob);
+        if(scene.sombra) scene.sombra.setPosition(scene.px,scene.py+14);
+      },
+      onComplete:function(){
+        // Llega y queda mirando hacia la puerta de la iglesia.
+        if(scene.jugador) scene.jugador.setTexture('char_back');
+        scene.time.delayedCall(1800,function(){
           scene.tweens.add({targets:msg,alpha:0,duration:500,onComplete:function(){
             msg.destroy();
             scene._mostrarPanelVictoriaFinal();
@@ -13282,27 +13431,34 @@ class CreditsScene extends Phaser.Scene {
       {t:'de la Plaza Principal',s:11,c:'#CCCCCC'},
       {t:'24 de Septiembre',s:11,c:'#CCCCCC'},
       {t:'',s:60},
-      {t:'DIRECCIÓN Y PROGRAMACIÓN',s:13,c:'#FFD700'},
-      {t:'[Tu Nombre Aquí]',s:11,c:'#FFFFFF'},
+      {t:'PROGRAMACIÓN',s:13,c:'#FFD700'},
+      {t:'Cristofer Olmos Cardozo',s:11,c:'#FFFFFF'},
+      {t:'Thiago Amador Amador',s:11,c:'#FFFFFF'},
       {t:'',s:50},
       {t:'ARTE Y DISEÑO DE PERSONAJES',s:13,c:'#FFD700'},
-      {t:'[Nombre del Artista]',s:11,c:'#FFFFFF'},
+      {t:'Personajes:Cristofer Olmos Cardozo',s:11,c:'#FFFFFF'},
+      {t:'Estructuras:Thiago Amador Amador',s:11,c:'#FFFFFF'},
       {t:'',s:50},
       {t:'MÚSICA Y SONIDO',s:13,c:'#FFD700'},
-      {t:'[Nombre del Compositor]',s:11,c:'#FFFFFF'},
+      {t:'Andrea Belén Segovia Bellido',s:11,c:'#FFFFFF'},
       {t:'',s:50},
       {t:'DISEÑO DE NIVELES Y ECONOMÍA',s:13,c:'#FFD700'},
-      {t:'[Tu Nombre Aquí]',s:11,c:'#FFFFFF'},
+      {t:'Andrea Belén Segovia Bellido',s:11,c:'#FFFFFF'},
       {t:'',s:50},
       {t:'PRUEBAS Y TESTEO',s:13,c:'#FFD700'},
-      {t:'[Nombres de testers]',s:11,c:'#FFFFFF'},
+      {t:'Amigos, Colegas, Familiares',s:11,c:'#FFFFFF'},
       {t:'',s:60},
       {t:'AGRADECIMIENTOS ESPECIALES',s:13,c:'#FFD700'},
       {t:'A la ciudad de Santa Cruz de la Sierra',s:11,c:'#CCCCCC'},
       {t:'A todos los que jugaron',s:11,c:'#CCCCCC'},
       {t:'y apoyaron este proyecto',s:11,c:'#CCCCCC'},
       {t:'',s:60},
-      {t:'HECHO CON PHASER 3',s:11,c:'#888888'},
+      {t:'HECHO CON IA(Inteleigencia Artificial)',s:11,c:'#888888'},
+      {t:'Antigravity(Codigo)',s:11,c:'#888888'},
+	  {t:'Cursor(Codigo)',s:11,c:'#888888'},
+	  {t:'Gemini(Imagenes e Ideas)',s:11,c:'#888888'},
+	  {t:'Claude(Desarrollo del Juego)',s:11,c:'#888888'},
+	  {t:'ChatGPT(Ideas y Prompts',s:11,c:'#888888'},
       {t:'',s:80},
       {t:'¡GRACIAS POR JUGAR!',s:20,c:'#FFD700'},
       {t:'',s:30},
@@ -13329,7 +13485,7 @@ class CreditsScene extends Phaser.Scene {
     this._tweenCreditos = this.tweens.add({
       targets:this._textos,
       y:'-='+distancia,
-      duration:30000,
+      duration:20000,
       ease:'Linear',
       onComplete:function(){ scene._volverAlMenu(); }
     });
