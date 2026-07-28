@@ -1924,6 +1924,7 @@ var MERCADO10_COL_ANCHO = MERCADO9_COL_ANCHO, MERCADO10_COL_ALTO = MERCADO9_COL_
 ===================================================== */
 var PROTESTA_INTERVALO_MS   = 120000;  // cada 2 minutos aparece una protesta
 var PROTESTA_PORCENTAJE     = 0.35;   // 35% del ingreso total/seg se descuenta mientras dure
+var PROTESTA_VELOCIDAD_DESCUENTO = 0.5; // 1 = velocidad normal (quita cada segundo real). 0.5 = la mitad de lento (tarda el doble en quitar lo mismo). Bajá este número para que quite más lento todavía (ej: 0.3, 0.25).
 var PROTESTA_X = 1000, PROTESTA_Y = 700; // arriba del Farol 6 (que se mantiene en y=920, sin tocarlo)
 var PROTESTA_ANCHO = 40, PROTESTA_ALTO = 34; // un poco más grande
 
@@ -5806,6 +5807,8 @@ class BootScene extends Phaser.Scene {
     // Ícono de papel (papel.txt en base64) — reemplaza el emoji 📄
     // en el botón de OBJETIVOS del HUD.
     cargarTexturaBase64(scene,'txt/papel.txt','icono_papel', function(ok){});
+    // Ícono de ubicación (ubicacion.txt en base64) — reemplaza el emoji 🗺 del botón GUÍA DEL MAPA
+    cargarTexturaBase64(scene,'txt/ubicacion.txt','icono_ubicacion', function(ok){});
     // Sprite del ladrón (malo.txt en base64) — personaje villano
     cargarTexturaBase64(scene,'txt/malo.txt','malo_tex', function(ok){});
     // Mercado HIPERMAXI: textura de reemplazo (instantánea) + SVG real en paralelo
@@ -6223,6 +6226,10 @@ class PauseScene extends Phaser.Scene {
         break;
       case 2: // Opciones
         this.scene.setVisible(false);
+        this.scene.pause(); // FIX: antes solo se ocultaba (setVisible) pero
+        // seguía activa, así que P/ESC/flechas/ENTER de este menú de Pausa
+        // seguían funcionando "por detrás" mientras el jugador estaba en
+        // Opciones (podía disparar "Continuar" o incluso "Salir" sin querer).
         this.scene.launch('OptionsScene');
         this.scene.bringToTop('OptionsScene');
         break;
@@ -6282,6 +6289,15 @@ class GameScene extends Phaser.Scene {
     var scene=this;
     this._pausado=false;
     this._dialogo=false;
+    // FIX (pantalla se "congelaba" tras rato de juego): si dos lotes
+    // llegaban a un hito de recompensa en el mismo frame (muy probable
+    // con varios lotes casi listos a la vez), _mostrarRecompensa() se
+    // llamaba dos veces seguidas y se apilaban dos paneles a pantalla
+    // completa; el de ABAJO quedaba con su overlay oscuro sin poder
+    // cerrarse nunca (su botón quedaba tapado por el de encima), y el
+    // juego se veía "congelado" para siempre aunque siguiera corriendo
+    // detrás. Ahora las recompensas se encolan y se muestran una por una.
+    this._colaRecompensas=[];
 
     // ── Mapa grande top-down
     if(!this.textures.exists('mapa')){
@@ -6422,6 +6438,11 @@ class GameScene extends Phaser.Scene {
       'Con Mamen,\nSanta Cruz brilla.',
       '¡Recoge más Bs.\npara la ciudad!',
       'La gestión de Mamen\nes la mejor.',
+      'Mi familia viene\nseguido a la plaza.',
+      '¡Qué lindo se ve\ntodo reconstruido!',
+      'Cuida bien cada\nlote de la plaza.',
+      'Santa Cruz de la\nSierra te agradece.',
+      'Sigue trabajando,\n¡vamos bien!',
     ];
     var npcPosiciones=[
       {x:MAP_W/2+320,y:MAP_H/2-240},
@@ -6429,11 +6450,17 @@ class GameScene extends Phaser.Scene {
       {x:MAP_W/2+240,y:MAP_H/2+340},
       {x:MAP_W/2-260,y:MAP_H/2-350},
       {x:MAP_W/2+60, y:MAP_H/2-480},
+      {x:MAP_W/2-140,y:MAP_H/2+420, flip:true},
+      {x:MAP_W/2+440,y:MAP_H/2-90,  flip:true},
+      {x:MAP_W/2-440,y:MAP_H/2-70},
+      {x:MAP_W/2+160,y:MAP_H/2+120, flip:true},
+      {x:MAP_W/2-60, y:MAP_H/2-140},
     ];
     this._npcs=[];
     npcPosiciones.forEach(function(pos,i){
       var sNpc=scene.add.ellipse(pos.x,pos.y+10,42,14,0x000000,0.18);
       var img=scene.add.image(pos.x,pos.y,'npc_01').setOrigin(0.5,1).setScale(0.52);
+      if(pos.flip) img.setFlipX(true); // mirando hacia el otro lado, para que no todos den la espalda igual
       var lbl=scene.add.text(pos.x,pos.y-108,'[ E ]',{
         fontFamily:"'Press Start 2P'",fontSize:'7px',color:'#FFD700',stroke:'#000',strokeThickness:1
       }).setOrigin(0.5).setAlpha(0);
@@ -6574,7 +6601,7 @@ class GameScene extends Phaser.Scene {
     // ── Monedas
     this.monedas=[];
     for(var iM=0;iM<28;iM++) this._spawnMoneda();
-    this.time.addEvent({delay:900,loop:true,callback:function(){
+    this.time.addEvent({delay:700,loop:true,callback:function(){
       if(scene.monedas.length<55) scene._spawnMoneda();
     }});
 
@@ -6613,11 +6640,29 @@ class GameScene extends Phaser.Scene {
     // el evento aunque el navegador sí lo capte. Así funciona igual en
     // PC (tecla física) y en celular (botón táctil, vía _accionE()).
     this._onKeyDownE=function(ev){
+      if(ev.repeat) return; // FIX: si se mantiene la tecla presionada, el
+      // navegador dispara keydown repetidamente (auto-repeat del SO), y
+      // sin este chequeo _accionE() alternaba abrir/cerrar el diálogo en
+      // bucle mientras la tecla seguía apretada (se veía como un parpadeo).
       if(ev.code==='KeyE' || ev.key==='e' || ev.key==='E'){
         scene._accionE();
       }
     };
     window.addEventListener('keydown',this._onKeyDownE);
+
+    // ── Tecla Q (Guía del Mapa): abre un panel con un mini-mapa que
+    // marca dónde está cada Lote (1 al 10), la Alcaldía y la Iglesia,
+    // para que el jugador sepa por dónde empezar a construir. Mismo
+    // mecanismo de window listener que la tecla E, por la misma razón
+    // (que funcione aunque el canvas no tenga el foco).
+    this._onKeyDownQ=function(ev){
+      if(ev.repeat) return; // FIX: mismo motivo que la tecla E — evita que
+      // mantener Q presionada abra/cierre la guía del mapa en bucle.
+      if(ev.code==='KeyQ' || ev.key==='q' || ev.key==='Q'){
+        scene._accionQ();
+      }
+    };
+    window.addEventListener('keydown',this._onKeyDownQ);
 
     // ── Tutorial inicial: aparece solo al entrar una partida NUEVA
     // (sin partida guardada). Si el jugador cargó una partida ya
@@ -6685,7 +6730,7 @@ class GameScene extends Phaser.Scene {
   // táctil (celular), para que ambos se comporten exactamente igual.
   _accionE(){
     if(this._pausado) return;
-    if(this._tutorialActivo) return;
+    if(this._tutorialActivo){ this._avanzarTutorial(); return; }
     if(this._dialogo){
       if(this._dialogoCerrar) this._dialogoCerrar();
       return;
@@ -6703,12 +6748,25 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  // Tecla/botón Q: abre la Guía del Mapa. Si ya hay CUALQUIER panel
+  // abierto (pausa, otro diálogo, etc.) no hace nada, para no apilar
+  // paneles encima de otros.
+  _accionQ(){
+    if(this._guiaMapaAbierta){ if(this._dialogoCerrar) this._dialogoCerrar(); return; }
+    if(this._pausado || this._dialogo || this._tutorialActivo) return;
+    this._abrirGuiaMapa();
+  }
+
   // ── Tutorial inicial: un globo de diálogo aparece automáticamente al
   // lado derecho del personaje, apenas se entra al juego, SIN que el
-  // jugador tenga que presionar nada. Explica cómo moverse y cómo
-  // hablar con los ciudadanos (tecla/botón E). El personaje queda
-  // congelado (no se mueve, no puede hablar con NPCs) hasta que el
-  // jugador intenta moverse por primera vez — ahí se cierra solo.
+  // jugador tenga que presionar nada. Ahora son 2 páginas, MISMO
+  // tamaño de cuadro que antes (no se agranda nada):
+  //   Página 1: cómo moverse y cómo hablar con los ciudadanos.
+  //   Página 2: para qué junta plata (reconstruir la plaza) y que el
+  //             progreso de cada lote es lo que hace avanzar el juego.
+  // Se avanza de página con E (aparece una flechita hacia abajo que
+  // lo indica); en la última página, E cierra el tutorial. El
+  // personaje también puede saltarlo moviéndose, igual que antes.
   _crearTutorial(){
     var scene=this;
     // NPC de tutorial, parado en frente del personaje (el jugador
@@ -6737,18 +6795,52 @@ class GameScene extends Phaser.Scene {
     var nom=this.add.text(bx-bw/2+16,by-bh/2+14,'TUTORIAL',{
       fontFamily:"'Press Start 2P'",fontSize:'9px',color:'#FFD700',stroke:'#000',strokeThickness:1
     }).setDepth(502);
-    var txt=this.add.text(bx-bw/2+16,by-bh/2+40,
+
+    this._tutorialPaginas=[
       'Usa W A S D o las\nflechas para moverte.\n\n'+
       'Combina varias flechas\npara ir en diagonal.\n\n'+
-      'Presiona E cerca de un\nciudadano para hablar\ncon él.',{
+      'Presiona E cerca de un\nciudadano para hablar\ncon él.',
+      'Recolecta Bs. por toda\nla plaza y úsalos para\nconstruir y mejorar\ncada lote.\n\n'+
+      'Así vas reconstruyendo\nla Plaza 24 de\nSeptiembre, poco a\npoco, hasta terminar\nel juego.'
+    ];
+    this._tutorialPaginaActual=0;
+
+    var txt=this.add.text(bx-bw/2+16,by-bh/2+40,this._tutorialPaginas[0],{
       fontFamily:"'Press Start 2P'",fontSize:'8px',color:'#FFFFFF',
       stroke:'#000',strokeThickness:2,lineSpacing:8
     }).setDepth(502);
-    var hint=this.add.text(bx,by+bh/2-14,'[ Muévete para empezar ]',{
+    // Flechita hacia abajo (parpadea): indica que se puede presionar E
+    // para pasar a la siguiente página del diálogo, sin agrandar el
+    // cuadro para nada.
+    var flecha=this.add.text(bx,by+bh/2-20,'▼',{
+      fontFamily:"'Press Start 2P'",fontSize:'12px',color:'#FFD700',stroke:'#000',strokeThickness:2
+    }).setOrigin(0.5).setDepth(502);
+    var hint=this.add.text(bx,by+bh/2-6,'[ Presiona E para continuar ]',{
       fontFamily:"'Press Start 2P'",fontSize:'6px',color:'#888888'
     }).setOrigin(0.5).setDepth(502);
-    scene.tweens.add({targets:hint,alpha:0.2,yoyo:true,repeat:-1,duration:600});
-    this._tutorialElems=[npcShadow,npcImg,ov,gd,tail,tailB,nom,txt,hint];
+    scene.tweens.add({targets:[flecha,hint],alpha:0.2,yoyo:true,repeat:-1,duration:600});
+    this._tutorialTxt=txt;
+    this._tutorialFlecha=flecha;
+    this._tutorialHint=hint;
+    this._tutorialElems=[npcShadow,npcImg,ov,gd,tail,tailB,nom,txt,flecha,hint];
+  }
+
+  // Llamado desde _accionE() mientras el tutorial está activo: pasa a
+  // la siguiente página, o cierra el tutorial si ya estaba en la
+  // última (mismo cuadro, solo cambia el texto adentro).
+  _avanzarTutorial(){
+    if(!this._tutorialActivo) return;
+    var siguiente=this._tutorialPaginaActual+1;
+    if(siguiente < this._tutorialPaginas.length){
+      this._tutorialPaginaActual=siguiente;
+      this._tutorialTxt.setText(this._tutorialPaginas[siguiente]);
+      var esUltima = siguiente === this._tutorialPaginas.length-1;
+      this._tutorialFlecha.setVisible(!esUltima);
+      this._tutorialHint.setText(esUltima ? '[ Presiona E para empezar ]' : '[ Presiona E para continuar ]');
+      AudioMgr.playFX(this);
+    } else {
+      this._cerrarTutorial();
+    }
   }
 
   _cerrarTutorial(){
@@ -6823,6 +6915,14 @@ class GameScene extends Phaser.Scene {
     scene.add.text(eBx,eBy,'E',{fontFamily:"'Press Start 2P'",fontSize:'26px',color:'#FFF'}).setOrigin(0.5).setScrollFactor(SF).setDepth(dep+1);
     var zE=scene.add.zone(eBx,eBy,eW,eH).setScrollFactor(SF).setDepth(dep+2).setInteractive();
     zE.on('pointerdown',function(){ scene._accionE(); });
+    // Botón Q (Guía del Mapa) — arriba del botón E, un poco más chico.
+    var qBx=eBx, qBy=eBy-eH-14, qW=88, qH=64;
+    var bgQ=scene.add.graphics().setScrollFactor(SF).setDepth(dep);
+    bgQ.fillStyle(0x0A2440,0.88); bgQ.fillRoundedRect(qBx-qW/2,qBy-qH/2,qW,qH,12);
+    bgQ.lineStyle(3,0x4FC3F7,0.55); bgQ.strokeRoundedRect(qBx-qW/2,qBy-qH/2,qW,qH,12);
+    scene.add.text(qBx,qBy,'Q',{fontFamily:"'Press Start 2P'",fontSize:'20px',color:'#4FC3F7'}).setOrigin(0.5).setScrollFactor(SF).setDepth(dep+1);
+    var zQ=scene.add.zone(qBx,qBy,qW,qH).setScrollFactor(SF).setDepth(dep+2).setInteractive();
+    zQ.on('pointerdown',function(){ scene._accionQ(); });
     // Botón de pantalla completa (por si el navegador la cerró)
     var fBx=1230, fBy=82;
     var bgF=scene.add.graphics().setScrollFactor(SF).setDepth(dep);
@@ -6986,6 +7086,7 @@ class GameScene extends Phaser.Scene {
       try{ AudioMgr.playFX(scene); }catch(e){}
       elems.forEach(function(e){ try{e.destroy();}catch(err){} });
       scene._dialogo=false;
+      scene._flushColaRecompensas();
       scene.cameras.main.flash(300,255,60,60,true);
       if(scene._onKeyDownEProtesta){
         window.removeEventListener('keydown',scene._onKeyDownEProtesta);
@@ -7036,7 +7137,7 @@ class GameScene extends Phaser.Scene {
     var ingresoSeg = this._calcularIngresoTotalPorSegundo();
     var descuentoSeg = ingresoSeg*PROTESTA_PORCENTAJE;
     if(descuentoSeg>0){
-      p._acumDescuento += descuentoSeg*dt;
+      p._acumDescuento += descuentoSeg*dt*PROTESTA_VELOCIDAD_DESCUENTO;
       // Se descuenta en enteros para que el HUD siempre muestre números
       // limpios (igual que el resto del dinero del juego).
       var restar = Math.floor(p._acumDescuento);
@@ -7047,7 +7148,7 @@ class GameScene extends Phaser.Scene {
       }
     }
     if(this.hudProtesta){
-      this.hudProtesta.setText('¡PROTESTA! Recoge '+p.monedasRecogidas+'/'+p.monedasNecesarias+' monedas  (-'+Math.round(descuentoSeg)+' Bs./seg)');
+      this.hudProtesta.setText('¡PROTESTA! Recoge '+p.monedasRecogidas+'/'+p.monedasNecesarias+' monedas  (-'+Math.round(descuentoSeg*PROTESTA_VELOCIDAD_DESCUENTO)+' Bs./seg)');
     }
 
     if(p.monedasRecogidas>=p.monedasNecesarias) this._terminarProtesta();
@@ -7111,6 +7212,12 @@ class GameScene extends Phaser.Scene {
     l.activa=true;
     l.elapsed=0;
     l._congelado=true; // congelado hasta que el jugador acepte el aviso
+    // FIX: antes el personaje se podía seguir moviendo con WASD/flechas
+    // mientras este aviso estaba en pantalla, porque a diferencia del
+    // aviso de la protesta, nunca activaba _dialogo (la bandera que el
+    // update() usa para bloquear el movimiento). Ahora se activa igual
+    // que en el aviso de la protesta.
+    scene._dialogo=true;
     AudioMgr.playAdvertencia(scene);
 
     // Sprite del ladrón: usa malo.txt si está disponible, sino fallback rojo
@@ -7134,7 +7241,7 @@ class GameScene extends Phaser.Scene {
       fontFamily:"'Press Start 2P'",fontSize:'20px',color:'#FF3333',
       stroke:'#000',strokeThickness:3
     }).setOrigin(0.5).setDepth(312).setScrollFactor(0);
-    var txtSub=scene.add.text(cx,cy-20,'VIENE UN LADRÓN',{
+    var txtSub=scene.add.text(cx,cy-20,'VIENE JHONNY FERNANDEZ',{
       fontFamily:"'Press Start 2P'",fontSize:'14px',color:'#FFFFFF',
       stroke:'#000',strokeThickness:2
     }).setOrigin(0.5).setDepth(312).setScrollFactor(0);
@@ -7153,7 +7260,11 @@ class GameScene extends Phaser.Scene {
     var cerrarPanel=function(){
       panelElems.forEach(function(o){ try{ if(o && o.active) o.destroy(); }catch(e){} });
       l._congelado=false; // descongelar al ladrón
+      scene._dialogo=false; // FIX: reactiva el movimiento del personaje
+      scene._dialogoCerrar=null;
+      scene._flushColaRecompensas();
     };
+    scene._dialogoCerrar=cerrarPanel; // así la tecla/botón E también cierra este aviso
     btnAceptar.on('pointerdown', cerrarPanel);
     // También cerrar con Enter o Espacio
     var onKey=function(ev){
@@ -7255,7 +7366,7 @@ class GameScene extends Phaser.Scene {
     // Abre un panel/hoja con los objetivos que los NPC rojos (guías)
     // ya explicaron: faroles y lotes (y bancas), para que el jugador
     // pueda repasar en cualquier momento qué tiene que hacer.
-    var objX=8, objY=panelY+panelH+8, objW=132, objH=26;
+    var objX=8, objY=panelY+panelH+8, objW=132, objH=34;
     var objBg=this.add.graphics().setScrollFactor(0).setDepth(200);
     objBg.fillStyle(0x2A1E05,0.92); objBg.fillRoundedRect(objX,objY,objW,objH,8);
     objBg.lineStyle(2,0xFFD700,1); objBg.strokeRoundedRect(objX,objY,objW,objH,8);
@@ -7263,15 +7374,36 @@ class GameScene extends Phaser.Scene {
     if(this.textures.exists('icono_papel')){
       iconoObj=this.add.image(objX+16,objY+objH/2,'icono_papel').setDisplaySize(14,14).setScrollFactor(0).setDepth(201);
     } else {
-      iconoObj=this.add.text(objX+9,objY+objH/2,'📄',{fontSize:'11px'}).setOrigin(0,0.5).setScrollFactor(0).setDepth(201);
+      iconoObj=this.add.text(objX+9,objY+objH/2,'📄',{fontSize:'13px'}).setOrigin(0,0.5).setScrollFactor(0).setDepth(201);
     }
     var lblObj=this.add.text(objX+28,objY+objH/2,'OBJETIVOS',{
-      fontFamily:"'Press Start 2P'",fontSize:'6px',color:'#FFD700',stroke:'#000',strokeThickness:2
+      fontFamily:"'Press Start 2P'",fontSize:'7px',color:'#FFD700',stroke:'#000',strokeThickness:2
     }).setOrigin(0,0.5).setScrollFactor(0).setDepth(201);
     var zoneObj=this.add.zone(objX+objW/2,objY+objH/2,objW,objH).setScrollFactor(0).setDepth(202).setInteractive({useHandCursor:true});
     zoneObj.on('pointerover',function(){ lblObj.setColor('#FFFFFF'); });
     zoneObj.on('pointerout', function(){ lblObj.setColor('#FFD700'); });
     zoneObj.on('pointerdown',function(){ scene._abrirPanelObjetivos(); });
+
+    // ── Botón GUÍA DEL MAPA — justo debajo de OBJETIVOS. Abre un
+    // mini-mapa con dónde está cada Lote (1 al 10), la Alcaldía y la
+    // Iglesia, para que el jugador sepa por dónde arrancar a construir.
+    var mapX=8, mapY=objY+objH+6, mapW=132, mapH=34;
+    var mapBg=this.add.graphics().setScrollFactor(0).setDepth(200);
+    mapBg.fillStyle(0x0A2440,0.92); mapBg.fillRoundedRect(mapX,mapY,mapW,mapH,8);
+    mapBg.lineStyle(2,0x4FC3F7,1); mapBg.strokeRoundedRect(mapX,mapY,mapW,mapH,8);
+    var iconoMap;
+    if(this.textures.exists('icono_ubicacion')){
+      iconoMap=this.add.image(mapX+16,mapY+mapH/2,'icono_ubicacion').setDisplaySize(14,14).setScrollFactor(0).setDepth(201);
+    } else {
+      iconoMap=this.add.text(mapX+9,mapY+mapH/2,'🗺',{fontSize:'13px'}).setOrigin(0,0.5).setScrollFactor(0).setDepth(201);
+    }
+    var lblMap=this.add.text(mapX+28,mapY+mapH/2,'GUÍA [Q]',{
+      fontFamily:"'Press Start 2P'",fontSize:'7px',color:'#4FC3F7',stroke:'#000',strokeThickness:2
+    }).setOrigin(0,0.5).setScrollFactor(0).setDepth(201);
+    var zoneMap=this.add.zone(mapX+mapW/2,mapY+mapH/2,mapW,mapH).setScrollFactor(0).setDepth(202).setInteractive({useHandCursor:true});
+    zoneMap.on('pointerover',function(){ lblMap.setColor('#FFFFFF'); });
+    zoneMap.on('pointerout', function(){ lblMap.setColor('#4FC3F7'); });
+    zoneMap.on('pointerdown',function(){ scene._accionQ(); });
 
     // ── Botón PAUSA — esquina superior derecha (móvil + PC)
     var btnBg=scene.add.graphics().setScrollFactor(0).setDepth(200);
@@ -7713,11 +7845,161 @@ class GameScene extends Phaser.Scene {
       elems.forEach(function(e){ try{e.destroy();}catch(err){} });
       scene._dialogo=false;
       scene._dialogoCerrar=null;
+      scene._flushColaRecompensas();
     };
     zBtn.on('pointerdown',cerrar);
     // También se puede cerrar con la tecla/botón [ E ], igual que los
     // demás diálogos y paneles del juego.
     this._dialogoCerrar=cerrar;
+  }
+
+  // ── Panel "GUÍA DEL MAPA" (tecla/botón Q): un mini-mapa con la
+  // ubicación de los 10 lotes, la Alcaldía y la Iglesia, para que el
+  // jugador sepa por dónde arrancar a construir y en qué orden. Cada
+  // lote se pinta de un color según su progreso (gris = sin empezar,
+  // naranja = en construcción, verde = Nivel 3 terminado), y el Lote 1
+  // se marca aparte como punto de partida recomendado.
+  _abrirGuiaMapa(){
+    var scene=this;
+    if(this._pausado || this._dialogo) return;
+    this._dialogo=true;
+    this._guiaMapaAbierta=true;
+    var elems=[];
+
+    var ov=this.add.rectangle(640,360,1280,720,0x000000,0.62).setScrollFactor(0).setDepth(300).setInteractive();
+    elems.push(ov);
+
+    var BW=560, BH=620, BX=640, BY=360;
+    var g=this.add.graphics().setScrollFactor(0).setDepth(301);
+    g.fillStyle(0x0A1830,0.97); g.fillRoundedRect(BX-BW/2,BY-BH/2,BW,BH,16);
+    g.lineStyle(3,0x4FC3F7,1);  g.strokeRoundedRect(BX-BW/2,BY-BH/2,BW,BH,16);
+    g.lineStyle(1,0x4FC3F7,0.35); g.strokeRoundedRect(BX-BW/2+8,BY-BH/2+8,BW-16,BH-16,12);
+    g.fillStyle(0x4FC3F7,1);
+    [[BX-BW/2,BY-BH/2],[BX+BW/2,BY-BH/2],[BX-BW/2,BY+BH/2],[BX+BW/2,BY+BH/2]].forEach(function(p){ g.fillRect(p[0]-5,p[1]-5,10,10); });
+    elems.push(g);
+
+    var titulo=this.add.text(BX,BY-BH/2+30,'GUÍA DEL MAPA',{
+      fontFamily:"'Press Start 2P'",fontSize:'15px',color:'#4FC3F7',stroke:'#000',strokeThickness:3
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
+    elems.push(titulo);
+    g.lineStyle(1,0x2A5A80,0.6); g.lineBetween(BX-BW/2+20,BY-BH/2+52,BX+BW/2-20,BY-BH/2+52);
+
+    // ── Mini-mapa (rectángulo que representa toda la plaza, escalado)
+    var mmSize=380, mmX=BX, mmY=BY-BH/2+64+mmSize/2;
+    var mmLeft=mmX-mmSize/2, mmTop=mmY-mmSize/2;
+    var escala=mmSize/MAP_W; // el mapa es cuadrado (MAP_W===MAP_H)
+    var mm=this.add.graphics().setScrollFactor(0).setDepth(302);
+    mm.fillStyle(0x2E5B1F,1); mm.fillRect(mmLeft,mmTop,mmSize,mmSize);
+    mm.lineStyle(2,0xFFD700,0.8); mm.strokeRect(mmLeft,mmTop,mmSize,mmSize);
+    elems.push(mm);
+
+    function aMinimapa(x,y){ return {x:mmLeft+x*escala, y:mmTop+y*escala}; }
+
+    var lotesInfo=[
+      {n:1, obj:this._lote,   x:LOTE_X,   y:LOTE_Y},
+      {n:2, obj:this._lote2,  x:LOTE2_X,  y:LOTE2_Y},
+      {n:3, obj:this._lote3,  x:LOTE3_X,  y:LOTE3_Y},
+      {n:4, obj:this._lote4,  x:LOTE4_X,  y:LOTE4_Y},
+      {n:5, obj:this._lote5,  x:LOTE5_X,  y:LOTE5_Y},
+      {n:6, obj:this._lote6,  x:LOTE6_X,  y:LOTE6_Y},
+      {n:7, obj:this._lote7,  x:LOTE7_X,  y:LOTE7_Y},
+      {n:8, obj:this._lote8,  x:LOTE8_X,  y:LOTE8_Y},
+      {n:9, obj:this._lote9,  x:LOTE9_X,  y:LOTE9_Y},
+      {n:10,obj:this._lote10, x:LOTE10_X, y:LOTE10_Y},
+    ];
+    var pm=this.add.graphics().setScrollFactor(0).setDepth(303);
+    elems.push(pm);
+    lotesInfo.forEach(function(L){
+      var p=aMinimapa(L.x,L.y);
+      var fase=(L.obj&&L.obj.fase)||0;
+      var color = fase>=4 ? 0x2ECC40 : (fase>=1 ? 0xFFA500 : 0x9AA0A6);
+      var radio = L.n===1 ? 12 : 9; // el Lote 1 se marca un poco más grande, es el punto de partida
+      pm.fillStyle(0x000000,0.5); pm.fillCircle(p.x+1,p.y+2,radio);
+      pm.fillStyle(color,1); pm.fillCircle(p.x,p.y,radio);
+      pm.lineStyle(2,0xFFFFFF,0.9); pm.strokeCircle(p.x,p.y,radio);
+      var numTxt=scene.add.text(p.x,p.y,''+L.n,{
+        fontFamily:"'Press Start 2P'",fontSize:'8px',color:'#000000'
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(304);
+      elems.push(numTxt);
+    });
+    // Alcaldía e Iglesia, como referencia adicional en el mini-mapa
+    var pAlc=aMinimapa(ALCALDIA_ZONA_X,ALCALDIA_ZONA_Y);
+    pm.fillStyle(0x8A4FC3,1); pm.fillRect(pAlc.x-7,pAlc.y-7,14,14);
+    pm.lineStyle(2,0xFFFFFF,0.9); pm.strokeRect(pAlc.x-7,pAlc.y-7,14,14);
+    var pIgl=aMinimapa(IGLESIA_X,IGLESIA_Y);
+    pm.fillStyle(0xE0C040,1); pm.fillRect(pIgl.x-7,pIgl.y-7,14,14);
+    pm.lineStyle(2,0xFFFFFF,0.9); pm.strokeRect(pIgl.x-7,pIgl.y-7,14,14);
+
+    // Marcador del personaje (dónde estás parado ahora mismo)
+    var pJug=aMinimapa(this.px,this.py);
+    var jugM=this.add.graphics().setScrollFactor(0).setDepth(305);
+    jugM.fillStyle(0x00BFFF,1); jugM.fillCircle(pJug.x,pJug.y,6);
+    jugM.lineStyle(2,0xFFFFFF,1); jugM.strokeCircle(pJug.x,pJug.y,6);
+    elems.push(jugM);
+    scene.tweens.add({targets:jugM,alpha:0.3,yoyo:true,repeat:-1,duration:500});
+
+    // ── Leyenda, debajo del mini-mapa
+    var leyY=mmTop+mmSize+16;
+    var leyenda=[
+      {color:0x9AA0A6, texto:'Sin empezar'},
+      {color:0xFFA500, texto:'En construcción'},
+      {color:0x2ECC40, texto:'Nivel 3 (listo)'},
+      {color:0x00BFFF, texto:'Vos (jugador)'},
+    ];
+    var leyX=BX-BW/2+30;
+    leyenda.forEach(function(le,i){
+      var lx=leyX + (i%2)*260, ly=leyY + Math.floor(i/2)*22;
+      var lg=scene.add.graphics().setScrollFactor(0).setDepth(302);
+      lg.fillStyle(le.color,1); lg.fillCircle(lx,ly,6);
+      lg.lineStyle(1,0xFFFFFF,0.8); lg.strokeCircle(lx,ly,6);
+      elems.push(lg);
+      elems.push(scene.add.text(lx+14,ly,le.texto,{
+        fontFamily:"'Press Start 2P'",fontSize:'6px',color:'#FFFFFF',stroke:'#000',strokeThickness:1
+      }).setOrigin(0,0.5).setScrollFactor(0).setDepth(302));
+    });
+    elems.push(scene.add.text(BX,leyY+52,'Empieza por el Lote 1 y segui\nel orden de los números.',{
+      fontFamily:"'Press Start 2P'",fontSize:'7px',color:'#FFD700',stroke:'#000',strokeThickness:1,
+      align:'center',lineSpacing:6
+    }).setOrigin(0.5,0).setScrollFactor(0).setDepth(302));
+
+    // Botón CERRAR
+    var BWc=220, BHc=44, BCX=BX, BCY=BY+BH/2-32;
+    var gb=this.add.graphics().setScrollFactor(0).setDepth(302);
+    gb.fillStyle(0x000000,0.4); gb.fillRoundedRect(BCX-BWc/2+4,BCY-BHc/2+5,BWc,BHc,10);
+    gb.fillStyle(0x1D5C8A,1);   gb.fillRoundedRect(BCX-BWc/2,BCY-BHc/2,BWc,BHc,10);
+    gb.fillStyle(0xFFFFFF,0.10); gb.fillRoundedRect(BCX-BWc/2,BCY-BHc/2,BWc,BHc*0.42,10);
+    elems.push(gb);
+    var lblBtn=this.add.text(BCX,BCY,'CERRAR',{
+      fontFamily:"'Press Start 2P'",fontSize:'11px',color:'#FFFFFF',stroke:'#000',strokeThickness:2
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(303);
+    elems.push(lblBtn);
+    var zBtnQ=this.add.zone(BCX,BCY,BWc,BHc).setScrollFactor(0).setDepth(304).setInteractive({useHandCursor:true});
+    elems.push(zBtnQ);
+    zBtnQ.on('pointerover',function(){ gb.clear();
+      gb.fillStyle(0x000000,0.4); gb.fillRoundedRect(BCX-BWc/2+4,BCY-BHc/2+5,BWc,BHc,10);
+      gb.fillStyle(0x2A78B0,1);   gb.fillRoundedRect(BCX-BWc/2,BCY-BHc/2,BWc,BHc,10);
+      gb.fillStyle(0xFFFFFF,0.16); gb.fillRoundedRect(BCX-BWc/2,BCY-BHc/2,BWc,BHc*0.42,10);
+    });
+    zBtnQ.on('pointerout',function(){ gb.clear();
+      gb.fillStyle(0x000000,0.4); gb.fillRoundedRect(BCX-BWc/2+4,BCY-BHc/2+5,BWc,BHc,10);
+      gb.fillStyle(0x1D5C8A,1);   gb.fillRoundedRect(BCX-BWc/2,BCY-BHc/2,BWc,BHc,10);
+      gb.fillStyle(0xFFFFFF,0.10); gb.fillRoundedRect(BCX-BWc/2,BCY-BHc/2,BWc,BHc*0.42,10);
+    });
+
+    var cerradoQ=false;
+    var cerrarQ=function(){
+      if(cerradoQ) return;
+      cerradoQ=true;
+      elems.forEach(function(e){ try{e.destroy();}catch(err){} });
+      scene._dialogo=false;
+      scene._dialogoCerrar=null;
+      scene._guiaMapaAbierta=false;
+      scene._flushColaRecompensas();
+    };
+    zBtnQ.on('pointerdown',cerrarQ);
+    // Se puede cerrar con [ E ] (como cualquier otro panel) o volviendo
+    // a presionar [ Q ].
+    this._dialogoCerrar=cerrarQ;
   }
 
   // ── Recalcula la velocidad real del personaje a partir del nivel de
@@ -7753,6 +8035,16 @@ class GameScene extends Phaser.Scene {
       iglesia:this._iglesia?{desbloqueada:this._iglesia.desbloqueada}:null,
       habilidadVelocidad:this.habilidadVelocidad||0
     };
+  }
+
+  // Si quedó alguna recompensa esperando en la cola (porque llegó
+  // mientras había otro panel abierto), la muestra ahora. Se llama
+  // desde el cierre de CUALQUIER panel/diálogo del juego.
+  _flushColaRecompensas(){
+    if(this._colaRecompensas && this._colaRecompensas.length>0){
+      var next=this._colaRecompensas.shift();
+      this._mostrarRecompensa(next.monto,next.subtitulo);
+    }
   }
 
   _mostrarDialogoNPC(npc){
@@ -7847,6 +8139,7 @@ class GameScene extends Phaser.Scene {
         var idx5=scene._npcs.indexOf(npc);
         if(idx5>=0) scene._npcs.splice(idx5,1);
       }
+      scene._flushColaRecompensas();
     };
     // Se cierra SOLO con la tecla E (PC) o el botón E táctil (celular),
     // nunca con un clic/toque en cualquier parte de la pantalla.
@@ -8125,6 +8418,14 @@ class GameScene extends Phaser.Scene {
   // ══════════════════════════════════════════════════
   _mostrarRecompensa(monto,subtitulo){
     var scene=this;
+    // FIX: si ya hay un panel abierto (otra recompensa, un diálogo, el
+    // aviso de protesta, etc.), NO se abre uno encima — se encola y se
+    // muestra automáticamente apenas se cierre el que está abierto. Ver
+    // nota completa en create() donde se inicializa _colaRecompensas.
+    if(this._dialogo){
+      this._colaRecompensas.push({monto:monto,subtitulo:subtitulo});
+      return;
+    }
     this._dialogo=true; // congela movimiento y sistemas mientras el panel está abierto
     var elems=[];
 
@@ -8190,6 +8491,7 @@ class GameScene extends Phaser.Scene {
       AudioMgr.playFX(scene);
       elems.forEach(function(e){ try{e.destroy();}catch(err){} });
       scene._dialogo=false;
+      scene._flushColaRecompensas();
     };
     zBtn.on('pointerover',function(){
       gb.clear();
@@ -12699,6 +13001,10 @@ class GameScene extends Phaser.Scene {
       window.removeEventListener('keydown',this._onKeyDownE);
       this._onKeyDownE=null;
     }
+    if(this._onKeyDownQ){
+      window.removeEventListener('keydown',this._onKeyDownQ);
+      this._onKeyDownQ=null;
+    }
     if(this.musicaJuego){
       this.musicaJuego = null;
     }
@@ -13112,6 +13418,7 @@ class GameScene extends Phaser.Scene {
       elems.forEach(function(e){ try{e.destroy();}catch(err){} });
       scene._dialogo=false;
       scene._dialogoCerrar=null;
+      scene._flushColaRecompensas();
     };
     zBtn.on('pointerdown',cerrar);
     this._dialogoCerrar=cerrar;
@@ -13514,7 +13821,7 @@ class OptionsScene extends Phaser.Scene {
   constructor(){ super('OptionsScene'); }
   create(){
     var scene=this;
-    var fromPause = scene.scene.isActive('PauseScene');
+    var fromPause = scene.scene.isActive('PauseScene') || scene.scene.isPaused('PauseScene');
     if(!fromPause){
       this.add.image(640,360,'menu').setDisplaySize(1280,720);
     }
@@ -13537,7 +13844,13 @@ class OptionsScene extends Phaser.Scene {
     var b=this.add.text(640,560,'<  VOLVER',{fontFamily:"'Press Start 2P'",fontSize:'14px',color:'#fff',stroke:'#000',strokeThickness:3}).setOrigin(0.5).setInteractive({useHandCursor:true});
     b.on('pointerover',function(){ b.setColor('#ffff00'); }); b.on('pointerout',function(){ b.setColor('#fff'); });
     b.on('pointerdown',function(){
-      if(scene.scene.isActive('PauseScene')){
+      // FIX: PauseScene ahora queda pausada (this.scene.pause()) al abrir
+      // Opciones desde ahí, no solo oculta — así que isActive() ya no la
+      // detecta (una escena pausada no cuenta como "activa" en Phaser).
+      // Por eso se chequea también isPaused(), y se hace resume() además
+      // de setVisible(true) para reanudarla de verdad.
+      if(scene.scene.isActive('PauseScene') || scene.scene.isPaused('PauseScene')){
+        scene.scene.resume('PauseScene');
         scene.scene.setVisible(true, 'PauseScene');
         scene.scene.stop('OptionsScene');
       } else {
@@ -13545,7 +13858,8 @@ class OptionsScene extends Phaser.Scene {
       }
     });
     this.input.keyboard.on('keydown-ESC',function(){
-      if(scene.scene.isActive('PauseScene')){
+      if(scene.scene.isActive('PauseScene') || scene.scene.isPaused('PauseScene')){
+        scene.scene.resume('PauseScene');
         scene.scene.setVisible(true, 'PauseScene');
         scene.scene.stop('OptionsScene');
       } else {
@@ -13589,8 +13903,8 @@ class ExitScene extends Phaser.Scene {
     si.on('pointerover',function(){ si.setColor('#ffaaaa'); }); si.on('pointerout',function(){ si.setColor('#ff4444'); });
     si.on('pointerdown',function(){ scene.scene.start('MenuScene'); });
     no.on('pointerover',function(){ no.setColor('#aaaaff'); }); no.on('pointerout',function(){ no.setColor('#FFFFFF'); });
-    no.on('pointerdown',function(){ scene.scene.start('MenuScene'); });
-    this.input.keyboard.on('keydown-ESC',function(){ scene.scene.start('MenuScene'); });
+    no.on('pointerdown',function(){ scene.scene.stop('ExitScene'); scene.scene.resume('GameScene'); });
+    this.input.keyboard.on('keydown-ESC',function(){ scene.scene.stop('ExitScene'); scene.scene.resume('GameScene'); });
   }
 }
 
