@@ -6664,14 +6664,21 @@ class GameScene extends Phaser.Scene {
     };
     window.addEventListener('keydown',this._onKeyDownQ);
 
-    // ── Tutorial inicial: aparece solo al entrar una partida NUEVA
-    // (sin partida guardada). Si el jugador cargó una partida ya
-    // existente, no tiene sentido repetírselo — ya sabe cómo jugar.
+    // ── Narrativa inicial + Tutorial: aparecen solo al entrar una
+    // partida NUEVA (sin partida guardada). Si el jugador cargó una
+    // partida ya existente, no tiene sentido repetírselos — ya sabe
+    // de qué trata el juego y cómo jugar. Reusamos la misma bandera
+    // _tutorialActivo para bloquear movimiento/pausa/diálogos durante
+    // AMBAS pantallas (narrativa y tutorial), y usamos _faseInicio
+    // para saber cuál de las dos hay que dibujar/avanzar en cada
+    // momento (ver _accionE()).
     if(!save){
       this._tutorialActivo=true;
-      this._crearTutorial();
+      this._faseInicio='narrativa';
+      this._crearIntroNarrativa();
     } else {
       this._tutorialActivo=false;
+      this._faseInicio=null;
     }
 
     this.cameras.main.fadeIn(500,0,0,0);
@@ -6730,7 +6737,11 @@ class GameScene extends Phaser.Scene {
   // táctil (celular), para que ambos se comporten exactamente igual.
   _accionE(){
     if(this._pausado) return;
-    if(this._tutorialActivo){ this._avanzarTutorial(); return; }
+    if(this._tutorialActivo){
+      if(this._faseInicio==='narrativa'){ this._avanzarIntro(); }
+      else { this._avanzarTutorial(); }
+      return;
+    }
     if(this._dialogo){
       if(this._dialogoCerrar) this._dialogoCerrar();
       return;
@@ -6767,6 +6778,98 @@ class GameScene extends Phaser.Scene {
   // Se avanza de página con E (aparece una flechita hacia abajo que
   // lo indica); en la última página, E cierra el tutorial. El
   // personaje también puede saltarlo moviéndose, igual que antes.
+  // ── Narrativa inicial: un cuadro de diálogo estilo "menú de pausa"
+  // (panel centrado en toda la pantalla, fijo a la cámara) que cuenta
+  // la historia del juego ANTES de que empiece cualquier otra cosa.
+  // Es obligatorio: bloquea movimiento/pausa/diálogos (misma bandera
+  // _tutorialActivo que el tutorial normal) y solo se avanza de
+  // página presionando E — tanto con la tecla física (PC) como con
+  // el botón táctil E (celular), porque ambos llaman a _accionE().
+  // Al llegar a la última página, se cierra y arranca el Tutorial
+  // normal (movimiento/hablar con NPCs), como pidió el usuario.
+  _crearIntroNarrativa(){
+    var scene=this;
+    var CX=640, CY=340, pw=680, ph=480;
+
+    var ov=this.add.rectangle(640,360,1280,720,0x000000,0.78).setScrollFactor(0).setDepth(900);
+    var g=this.add.graphics().setScrollFactor(0).setDepth(901);
+    g.fillStyle(0x03015E,0.97); g.fillRoundedRect(CX-pw/2,CY-ph/2,pw,ph,16);
+    g.lineStyle(3,0x3A70D0,1); g.strokeRoundedRect(CX-pw/2,CY-ph/2,pw,ph,16);
+    g.lineStyle(1,0xFFD700,0.35); g.strokeRoundedRect(CX-pw/2+8,CY-ph/2+8,pw-16,ph-16,12);
+    g.fillStyle(0xFFD700,1);
+    [[CX-pw/2,CY-ph/2],[CX+pw/2,CY-ph/2],[CX-pw/2,CY+ph/2],[CX+pw/2,CY+ph/2]].forEach(function(p){
+      g.fillRect(p[0]-5,p[1]-5,10,10);
+    });
+
+    var titulo=this.add.text(CX,CY-ph/2+34,'CONSTRUYENDO\nSANTA CRUZ',{
+      fontFamily:"'Press Start 2P'",fontSize:'16px',color:'#FFD700',
+      stroke:'#000000',strokeThickness:4,align:'center',lineSpacing:8
+    }).setOrigin(0.5,0).setScrollFactor(0).setDepth(902);
+    g.lineStyle(1,0x3A5FD0,0.5); g.lineBetween(CX-pw/2+20,CY-ph/2+104,CX+pw/2-20,CY-ph/2+104);
+
+    this._introPaginas=[
+      'La Plaza 24 de Septiembre,\nel corazón de Santa Cruz,\nya no es el lugar de\ntranquilidad que alguna\nvez fue.\n\n'+
+      'Las protestas han tomado\nsus calles y un ladrón\naprovecha el desorden para\nrobar los recursos de la\nciudad, aumentando el caos\nentre la población.',
+
+      'En medio de esta crisis\naparece Mamen Saavedra,\ndecidido a devolver la\ntranquilidad a la plaza.\n\n'+
+      'Su misión será ayudar a\nlos ciudadanos, enfrentar\nlos disturbios, recuperar\nlos recursos robados y\ndemostrar que Santa Cruz\npuede volver a levantarse.',
+
+      '¡La aventura\ncomienza ahora!'
+    ];
+    this._introPaginaActual=0;
+
+    var txt=this.add.text(CX,CY-ph/2+122,this._introPaginas[0],{
+      fontFamily:"'Press Start 2P'",fontSize:'9px',color:'#FFFFFF',
+      stroke:'#000',strokeThickness:2,align:'center',lineSpacing:9
+    }).setOrigin(0.5,0).setScrollFactor(0).setDepth(902);
+
+    var flecha=this.add.text(CX,CY+ph/2-46,'▼',{
+      fontFamily:"'Press Start 2P'",fontSize:'14px',color:'#FFD700',stroke:'#000',strokeThickness:2
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(902);
+    var hint=this.add.text(CX,CY+ph/2-24,'[ Presiona E para continuar ]',{
+      fontFamily:"'Press Start 2P'",fontSize:'8px',color:'#AAAAAA'
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(902);
+    scene.tweens.add({targets:[flecha,hint],alpha:0.2,yoyo:true,repeat:-1,duration:600});
+
+    this._introTxt=txt;
+    this._introFlecha=flecha;
+    this._introHint=hint;
+    this._introElems=[ov,g,titulo,txt,flecha,hint];
+  }
+
+  // Llamado desde _accionE() mientras la narrativa está activa: pasa
+  // a la siguiente página, o la cierra y arranca el Tutorial normal
+  // si ya estaba en la última página.
+  _avanzarIntro(){
+    if(this._faseInicio!=='narrativa') return;
+    var siguiente=this._introPaginaActual+1;
+    if(siguiente < this._introPaginas.length){
+      this._introPaginaActual=siguiente;
+      this._introTxt.setText(this._introPaginas[siguiente]);
+      var esUltima = siguiente === this._introPaginas.length-1;
+      this._introFlecha.setVisible(!esUltima);
+      this._introHint.setText(esUltima ? '[ Presiona E para comenzar ]' : '[ Presiona E para continuar ]');
+      AudioMgr.playFX(this);
+    } else {
+      this._cerrarIntroYComenzarTutorial();
+    }
+  }
+
+  _cerrarIntroYComenzarTutorial(){
+    if(this._introElems){
+      this._introElems.forEach(function(e){
+        try{ e.destroy(); }catch(err){}
+      });
+      this._introElems=null;
+    }
+    AudioMgr.playFX(this);
+    // _tutorialActivo sigue en true: pasamos directo del bloqueo de la
+    // narrativa al bloqueo del tutorial, sin dejar un frame intermedio
+    // donde el jugador pueda moverse libremente.
+    this._faseInicio='tutorial';
+    this._crearTutorial();
+  }
+
   _crearTutorial(){
     var scene=this;
     // NPC de tutorial, parado en frente del personaje (el jugador
@@ -7053,13 +7156,13 @@ class GameScene extends Phaser.Scene {
     g.lineStyle(1,0xD03A3A,0.5); g.lineBetween(410,320,870,320);
 
     var sub=scene.add.text(640,355,'Los protestantes exigen obras.\nMientras estén ahí, vas a perder\ndinero cada segundo.',{
-      fontFamily:"'Press Start 2P'",fontSize:'8px',color:'#FFFFFF',
-      stroke:'#000000',strokeThickness:2,align:'center',wordWrap:{width:440}
+      fontFamily:"'Press Start 2P'",fontSize:'10px',color:'#FFFFFF',
+      stroke:'#000000',strokeThickness:2,align:'center',wordWrap:{width:460},lineSpacing:6
     }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
     elems.push(sub);
 
     var necTxt=scene.add.text(640,410,'Recoge '+n+' monedas para calmarlos',{
-      fontFamily:"'Press Start 2P'",fontSize:'10px',color:'#FFEE66',
+      fontFamily:"'Press Start 2P'",fontSize:'12px',color:'#FFEE66',
       stroke:'#000000',strokeThickness:3,align:'center'
     }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
     elems.push(necTxt);
@@ -7221,10 +7324,10 @@ class GameScene extends Phaser.Scene {
     AudioMgr.playAdvertencia(scene);
 
     // Sprite del ladrón: usa malo.txt si está disponible, sino fallback rojo
-    l.sombra=this.add.ellipse(p0.x,p0.y+14,32,10,0x000000,0.3).setDepth(48);
+    l.sombra=this.add.ellipse(p0.x,p0.y+14,56,18,0x000000,0.3).setDepth(48);
     var texKey = this.textures.exists('malo_tex') ? 'malo_tex' : 'char_front';
     l.sprite=this.add.image(p0.x,p0.y,texKey)
-      .setOrigin(0.5,1).setDisplaySize(60,80).setDepth(49);
+      .setOrigin(0.5,1).setDisplaySize(120,160).setDepth(49);
     if(texKey==='char_front') l.sprite.setTint(0x662020);
 
     // Panel de aviso centrado — congela todo hasta ACEPTAR
@@ -7246,8 +7349,8 @@ class GameScene extends Phaser.Scene {
       stroke:'#000',strokeThickness:2
     }).setOrigin(0.5).setDepth(312).setScrollFactor(0);
     var txtDesc=scene.add.text(cx,cy+18,'Va a robar el dinero acumulado\nde tus estructuras si no lo evitas.',{
-      fontFamily:"'Press Start 2P'",fontSize:'8px',color:'#FFAAAA',
-      stroke:'#000',strokeThickness:1,align:'center'
+      fontFamily:"'Press Start 2P'",fontSize:'10px',color:'#FFAAAA',
+      stroke:'#000',strokeThickness:1,align:'center',lineSpacing:6
     }).setOrigin(0.5).setDepth(312).setScrollFactor(0);
     var btnAceptar=scene.add.text(cx,cy+75,'  ACEPTAR  ',{
       fontFamily:"'Press Start 2P'",fontSize:'13px',color:'#FFFFFF',
@@ -7879,7 +7982,7 @@ class GameScene extends Phaser.Scene {
     elems.push(g);
 
     var titulo=this.add.text(BX,BY-BH/2+30,'GUÍA DEL MAPA',{
-      fontFamily:"'Press Start 2P'",fontSize:'15px',color:'#4FC3F7',stroke:'#000',strokeThickness:3
+      fontFamily:"'Press Start 2P'",fontSize:'17px',color:'#4FC3F7',stroke:'#000',strokeThickness:3
     }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
     elems.push(titulo);
     g.lineStyle(1,0x2A5A80,0.6); g.lineBetween(BX-BW/2+20,BY-BH/2+52,BX+BW/2-20,BY-BH/2+52);
@@ -7918,7 +8021,7 @@ class GameScene extends Phaser.Scene {
       pm.fillStyle(color,1); pm.fillCircle(p.x,p.y,radio);
       pm.lineStyle(2,0xFFFFFF,0.9); pm.strokeCircle(p.x,p.y,radio);
       var numTxt=scene.add.text(p.x,p.y,''+L.n,{
-        fontFamily:"'Press Start 2P'",fontSize:'8px',color:'#000000'
+        fontFamily:"'Press Start 2P'",fontSize:'10px',color:'#000000'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(304);
       elems.push(numTxt);
     });
@@ -7948,18 +8051,18 @@ class GameScene extends Phaser.Scene {
     ];
     var leyX=BX-BW/2+30;
     leyenda.forEach(function(le,i){
-      var lx=leyX + (i%2)*260, ly=leyY + Math.floor(i/2)*22;
+      var lx=leyX + (i%2)*270, ly=leyY + Math.floor(i/2)*30;
       var lg=scene.add.graphics().setScrollFactor(0).setDepth(302);
-      lg.fillStyle(le.color,1); lg.fillCircle(lx,ly,6);
-      lg.lineStyle(1,0xFFFFFF,0.8); lg.strokeCircle(lx,ly,6);
+      lg.fillStyle(le.color,1); lg.fillCircle(lx,ly,7);
+      lg.lineStyle(1,0xFFFFFF,0.8); lg.strokeCircle(lx,ly,7);
       elems.push(lg);
-      elems.push(scene.add.text(lx+14,ly,le.texto,{
-        fontFamily:"'Press Start 2P'",fontSize:'6px',color:'#FFFFFF',stroke:'#000',strokeThickness:1
+      elems.push(scene.add.text(lx+16,ly,le.texto,{
+        fontFamily:"'Press Start 2P'",fontSize:'9px',color:'#FFFFFF',stroke:'#000',strokeThickness:1
       }).setOrigin(0,0.5).setScrollFactor(0).setDepth(302));
     });
-    elems.push(scene.add.text(BX,leyY+52,'Empieza por el Lote 1 y segui\nel orden de los números.',{
-      fontFamily:"'Press Start 2P'",fontSize:'7px',color:'#FFD700',stroke:'#000',strokeThickness:1,
-      align:'center',lineSpacing:6
+    elems.push(scene.add.text(BX,leyY+62,'Empieza por el Lote 1 y segui\nel orden de los números.',{
+      fontFamily:"'Press Start 2P'",fontSize:'10px',color:'#FFD700',stroke:'#000',strokeThickness:1,
+      align:'center',lineSpacing:8
     }).setOrigin(0.5,0).setScrollFactor(0).setDepth(302));
 
     // Botón CERRAR
@@ -7970,7 +8073,7 @@ class GameScene extends Phaser.Scene {
     gb.fillStyle(0xFFFFFF,0.10); gb.fillRoundedRect(BCX-BWc/2,BCY-BHc/2,BWc,BHc*0.42,10);
     elems.push(gb);
     var lblBtn=this.add.text(BCX,BCY,'CERRAR',{
-      fontFamily:"'Press Start 2P'",fontSize:'11px',color:'#FFFFFF',stroke:'#000',strokeThickness:2
+      fontFamily:"'Press Start 2P'",fontSize:'13px',color:'#FFFFFF',stroke:'#000',strokeThickness:2
     }).setOrigin(0.5).setScrollFactor(0).setDepth(303);
     elems.push(lblBtn);
     var zBtnQ=this.add.zone(BCX,BCY,BWc,BHc).setScrollFactor(0).setDepth(304).setInteractive({useHandCursor:true});
@@ -8162,13 +8265,11 @@ class GameScene extends Phaser.Scene {
     }
     var mov=(dx!==0||dy!==0);
 
-    // ── Tutorial: en cuanto el jugador intenta moverse por primera vez
-    // (teclado o joystick), se cierra el tutorial y el personaje queda
-    // libre para jugar normalmente.
-    if(this._tutorialActivo){
-      if(mov) this._cerrarTutorial();
-    }
-
+    // ── Tutorial: FIX — antes bastaba con moverse (teclado o joystick)
+    // para saltarse todo el tutorial sin leerlo, incluso en la página 1.
+    // Ahora el movimiento queda bloqueado mientras el tutorial está
+    // activo (como cualquier otro diálogo) y la única forma de avanzar
+    // o cerrarlo es presionando E, página por página.
     if(mov && !this._dialogo && !this._tutorialActivo){
       // La corrección de velocidad diagonal solo aplica al teclado/D-pad
       // digital; el joystick analógico ya trae la magnitud correcta.
